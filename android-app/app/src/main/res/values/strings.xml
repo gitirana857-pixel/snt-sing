@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SNT Sing</string>
+    <string name="loading_video">Carregando vídeo…</string>
+    <string name="btn_start_recording">Gravar</string>
+</resources>
