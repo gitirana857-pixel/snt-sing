@@ -58,6 +58,36 @@ CREATE TABLE IF NOT EXISTS songs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------
+-- Tabela: recordings (gravações dos usuários)
+-- -----------------------------------------------------------
+CREATE TABLE IF NOT EXISTS recordings (
+    id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id         INT UNSIGNED    DEFAULT NULL,           -- NULL se anônimo
+    song_id         INT UNSIGNED    NOT NULL,
+    session_start_ts BIGINT UNSIGNED NOT NULL,              -- UNIX timestamp do início
+    video_path      VARCHAR(500)    NOT NULL,               -- caminho relativo do vídeo
+    audio_path      VARCHAR(500)    NOT NULL,               -- caminho relativo do áudio
+    mix_path        VARCHAR(500)    DEFAULT NULL,           -- caminho do vídeo mixado (após FFmpeg)
+    voice_volume    DECIMAL(4,2)    DEFAULT 1.00,           -- 0.0 - 2.0
+    music_volume    DECIMAL(4,2)    DEFAULT 0.80,           -- 0.0 - 2.0
+    reverb_level    DECIMAL(4,2)    DEFAULT 0.00,           -- 0.0 - 1.0
+    echo_level      DECIMAL(4,2)    DEFAULT 0.00,           -- 0.0 - 1.0
+    video_size      BIGINT UNSIGNED DEFAULT 0,              -- tamanho do vídeo em bytes
+    audio_size      BIGINT UNSIGNED DEFAULT 0,              -- tamanho do áudio em bytes
+    duration_secs   INT UNSIGNED    DEFAULT 0,              -- duração final em segundos (calculada)
+    status          ENUM('pending','mixing','ready','failed') DEFAULT 'pending',
+    created_at      TIMESTAMP       DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP       DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (song_id) REFERENCES songs(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+    INDEX idx_recordings_user (user_id),
+    INDEX idx_recordings_song (song_id),
+    INDEX idx_recordings_status (status),
+    INDEX idx_recordings_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------
 -- Dados de exemplo (opcional)
 -- -----------------------------------------------------------
 INSERT INTO artists (name, bio) VALUES

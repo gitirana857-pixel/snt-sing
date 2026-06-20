@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.media.MediaRecorder
 import android.os.Bundle
 import android.util.Log
+import android.util.Size
 import android.view.View
 import android.widget.SeekBar
 import android.widget.Toast
@@ -14,6 +15,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.core.VideoCapture
+import androidx.camera.core.VideoCapture.Recorder
+import androidx.camera.core.VideoCapture.Quality
+import androidx.camera.core.VideoCapture.QualitySelector
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
@@ -59,7 +63,7 @@ class RecordingActivity : AppCompatActivity() {
     // ─── CameraX ─────────────────────────────────────────
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     private var cameraProvider: ProcessCameraProvider? = null
-    private var videoCapture: VideoCapture? = null
+    private var videoCapture: VideoCapture<Recorder>? = null
 
     // ─── ExoPlayer ───────────────────────────────────────
     private var exoPlayer: ExoPlayer? = null
@@ -86,6 +90,10 @@ class RecordingActivity : AppCompatActivity() {
     // ─── URL de teste ────────────────────────────────────
     private val TEST_VIDEO_URL =
         "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4"
+
+    // ─── URL da API ────────────────────────────────────
+    private val API_BASE = "https://sntcam.studiosnt.com.br/api"
+    private var currentSongId: Int = 0                     // setado via intent
 
     // ─── Mixer ────────────────────────────────────────────
     private var mixer: FFmpegMixer? = null
@@ -221,18 +229,19 @@ class RecordingActivity : AppCompatActivity() {
                 .build()
                 .also { it.setSurfaceProvider(binding.previewView.surfaceProvider) }
 
-            // VideoCapture (gravação sem áudio)
-            // ─── Por padrão, CameraX NÃO grava áudio no vídeo.
-            //     O áudio será capturado separadamente pelo MediaRecorder.
-            videoCapture = VideoCapture.Builder()
+            // VideoCapture (gravação sem áudio) — CameraX 1.4 API
+            // Nova API: VideoCapture<Recorder> com Recorder.Builder()
+            val recorder = Recorder.Builder()
+                .setQualitySelector(QualitySelector.from(Quality.HIGHEST))
                 .build()
+            videoCapture = VideoCapture.withOutput(recorder)
 
             try {
                 cameraProvider?.unbindAll()
                 cameraProvider?.bindToLifecycle(
                     this, cameraSelector, preview, videoCapture
                 )
-                Log.d(TAG, "✅ Câmera + VideoCapture prontos")
+                Log.d(TAG, "✅ Câmera + VideoCapture<Recorder> prontos")
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Erro câmera: ${e.message}")
             }
@@ -382,7 +391,7 @@ class RecordingActivity : AppCompatActivity() {
                 }
             }
         )
-        Log.d(TAG, "🎥 VideoCapture iniciado: ${videoFile!!.absolutePath}")
+        Log.d(TAG, "🎥 VideoCapture<Recorder> iniciado: ${videoFile!!.absolutePath}")
     }
 
     /**
@@ -515,10 +524,10 @@ class RecordingActivity : AppCompatActivity() {
 
         // Mostra status
         binding.tvMixStatus.visibility = View.VISIBLE
-        binding.tvMixStatus.text = "🔄 Preparaando mixagem..."
+        binding.tvMixStatus.text = "🔄 Preparando mixagem..."
         binding.btnSave.isEnabled = false
 
-        // Cria o mixer
+        // Cria o mixer com suporte a karaoke
         mixer = FFmpegMixer(
             context = this,
             videoFile = vidFile,
@@ -529,6 +538,52 @@ class RecordingActivity : AppCompatActivity() {
             voiceVolume = binding.sbVoiceVol.progress / 100f
             musicVolume = binding.sbMusicVol.progress / 100f
 
+            // Se tiver letras, adiciona karaoke ASS
+            // (em produção: buscar lyrics da API /api/lyrics.php?song_id=X
+            //  e converter para List<KaraokeLine>)
+            // Exemplo com letras estáticas para teste:
+            karaokeLyrics = listOf(
+                KaraokeLine(0.0, 4.0, "Twinkle twinkle little star",
+                    listOf(
+                        KaraokeWord("Twinkle", 1.0),
+                        KaraokeWord("twinkle", 1.0),
+                        KaraokeWord("little", 1.0),
+                        KaraokeWord("star", 1.0)
+                    ), isChorus = false
+                ),
+                KaraokeLine(4.0, 8.0, "How I wonder what you are",
+                    listOf(
+                        KaraokeWord("How", 0.8),
+                        KaraokeWord("I", 0.4),
+                        KaraokeWord("wonder", 1.2),
+                        KaraokeWord("what", 0.8),
+                        KaraokeWord("you", 0.4),
+                        KaraokeWord("are", 1.2)
+                    ), isChorus = false
+                ),
+                KaraokeLine(8.0, 12.0, "Up above the world so high",
+                    listOf(
+                        KaraokeWord("Up", 0.5),
+                        KaraokeWord("above", 1.0),
+                        KaraokeWord("the", 0.5),
+                        KaraokeWord("world", 1.0),
+                        KaraokeWord("so", 0.5),
+                        KaraokeWord("high", 1.0)
+                    ), isChorus = false
+                ),
+                KaraokeLine(12.0, 16.0, "Like a diamond in the sky",
+                    listOf(
+                        KaraokeWord("Like", 0.5),
+                        KaraokeWord("a", 0.3),
+                        KaraokeWord("diamond", 1.2),
+                        KaraokeWord("in", 0.5),
+                        KaraokeWord("the", 0.3),
+                        KaraokeWord("sky", 1.2)
+                    ), isChorus = false
+                ),
+            )
+
+            // Callbacks
             onProgress = { percent ->
                 runOnUiThread {
                     binding.tvMixStatus.text = when {

@@ -16,6 +16,7 @@ import java.net.URL
  * 2. Aplicar ganho (volume) na voz e na música
  * 3. Mixar (amix) as duas trilhas de áudio
  * 4. Muxar o áudio mixado ao vídeo da câmera
+ * 5. Queimar legendas karaoke (ASS) no vídeo final
  *
  * ─── FLUXO FFMPEG ───
  *
@@ -31,7 +32,12 @@ import java.net.URL
  *
  * Output:
  *   map 0:v (vídeo original) + map [mixed] (áudio mixado)
- *   → output_final.mp4
+ *   + subtitles overlay (se karaokeLyrics fornecido)
+ *
+ * ─── GERAÇÃO DE KARAOKE ───
+ *
+ * Se `karaokeLyrics` for fornecido, o mixer gera um arquivo ASS
+ * com karaoke timing e queima no vídeo durante a mixagem.
  */
 class FFmpegMixer(
     private val context: Context,
@@ -43,6 +49,9 @@ class FFmpegMixer(
     // ─── Configuração de volume ──────────────────────────
     var voiceVolume: Float = 1.0f    // 0.0 .. 2.0 (multiplicador linear)
     var musicVolume: Float = 0.8f    // 0.0 .. 2.0
+
+    // ─── Configuração de karaoke ─────────────────────────
+    var karaokeLyrics: List<KaraokeLine>? = null  // opcional: letras sincronizadas
 
     // ─── Callbacks ───────────────────────────────────────
     var onProgress: ((percent: Int) -> Unit)? = null
@@ -56,8 +65,9 @@ class FFmpegMixer(
     /**
      * Inicia o processo completo:
      * 1. Download do instrumental
-     * 2. Mixagem com FFmpeg
-     * 3. Notifica resultado
+     * 2. Geração de ASS karaoke (se letras fornecidas)
+     * 3. Mixagem com FFmpeg (com ou sem karaoke)
+     * 4. Notifica resultado
      */
     fun start() {
         Thread {
@@ -70,15 +80,24 @@ class FFmpegMixer(
                     onError?.invoke("Falha ao baixar áudio da música base")
                     return@Thread
                 }
-                onProgress?.invoke(20)
+                onProgress?.invoke(15)
 
-                // ─── 2. Prepara diretório de saída ───────
+                // ─── 2. Gera ASS karaoke se tiver letras ──
+                var assFile: File? = null
+                if (!karaokeLyrics.isNullOrEmpty()) {
+                    onProgress?.invoke(20)
+                    assFile = generateKaraokeAss()
+                    Log.d(TAG, "📝 ASS karaoke gerado: ${assFile?.absolutePath}")
+                }
+                onProgress?.invoke(25)
+
+                // ─── 3. Prepara diretório de saída ───────
                 val outputDir = File(context.cacheDir, "recordings/final")
                 outputDir.mkdirs()
                 val outputFile = File(outputDir, "output_final_${System.currentTimeMillis()}.mp4")
 
-                // ─── 3. Monta e executa FFmpeg ───────────
-                val command = buildCommand(outputFile)
+                // ─── 4. Monta e executa FFmpeg ───────────
+                val command = buildCommand(outputFile, assFile)
                 Log.d(TAG, "🎬 FFmpeg command:\n$command")
 
                 executeFFmpeg(command, outputFile)
@@ -101,15 +120,6 @@ class FFmpegMixer(
     // DOWNLOAD DO INSTRUMENTAL
     // ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ──
 
-    /**
-     * Baixa o áudio da música base para um arquivo local.
-     *
-     * Se a instrumentalUrl for um vídeo do YouTube, extraímos
-     * apenas o áudio. Caso contrário, baixamos o arquivo direto.
-     *
-     * Para produção: o backend deve fornecer uma URL direta
-     * para o arquivo de áudio (.aac/.mp3) separadamente.
-     */
     private fun downloadInstrumental(): File? {
         return try {
             val dest = File(context.cacheDir, "recordings/instrumental.aac")
@@ -133,10 +143,106 @@ class FFmpegMixer(
             Log.e(TAG, "❌ Falha ao baixar instrumental: ${e.message}")
 
             // Fallback: usar o próprio arquivo de vídeo como fonte de áudio
-            // (útil para testes com MP4 local)
             Log.w(TAG, "⚠️ Usando arquivo de vídeo como fallback de áudio")
             videoFile
         }
+    }
+
+    // ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ──
+    // GERAÇÃO DE ASS KARAOKE
+    // ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ──
+
+    /**
+     * Gera um arquivo ASS (Advanced SubStation Alpha) com timing karaoke.
+     *
+     * Formato:
+     *   {\k<centisegs>}word — destaca palavra por palavra
+     *   {\kf<centisegs>}word — destaque suave (fade progressivo)
+     *
+     * Timing: cada linha tem start e end em segundos
+     */
+    private fun generateKaraokeAss(): File {
+        val assFile = File(context.cacheDir, "recordings/karaoke.ass")
+
+        assFile.bufferedWriter().use { writer ->
+            // ─── Cabeçalho ───────────────────────────────
+            writer.writeLine("[Script Info]")
+            writer.writeLine("Title: SNT Sing Karaoke")
+            writer.writeLine("ScriptType: v4.00+")
+            writer.writeLine("PlayResX: 1920")
+            writer.writeLine("PlayResY: 1080")
+            writer.writeLine("ScaledBorderAndShadow: yes")
+            writer.newLine()
+
+            // ─── Styles ──────────────────────────────────
+            writer.writeLine("[V4+ Styles]")
+            writer.writeLine(
+                "Format: Name, Fontname, Fontsize, PrimaryColour, " +
+                "SecondaryColour, OutlineColour, BackColour, Bold, Italic, " +
+                "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, " +
+                "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, " +
+                "MarginV, Encoding"
+            )
+            writer.writeLine(
+                "Style: Karaoke,Arial,72,&H00FFFFFF,&H0000FF00,&H00000000," +
+                "&H80000000,1,0,0,0,100,100,0,0,1,3,2,2,10,10,50,1"
+            )
+            writer.writeLine(
+                "Style: KaraokeSmall,Arial,48,&H00FFFFFF,&H0000FF00,&H00000000," +
+                "&H80000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,30,1"
+            )
+            writer.newLine()
+
+            // ─── Events ──────────────────────────────────
+            writer.writeLine("[Events]")
+            writer.writeLine(
+                "Format: Layer, Start, End, Style, Name, " +
+                "MarginL, MarginR, MarginV, Effect, Text"
+            )
+
+            for (line in karaokeLyrics!!) {
+                val startTime = formatAssTime(line.startSec)
+                val endTime = formatAssTime(line.endSec)
+                val style = if (line.isChorus) "Karaoke" else "KaraokeSmall"
+                val karaokeText = buildKaraokeText(line.words)
+                writer.writeLine(
+                    "Dialogue: 0,$startTime,$endTime,$style,,0,0,0,,$karaokeText"
+                )
+            }
+        }
+
+        return assFile
+    }
+
+    /**
+     * Converte segundos para formato ASS (h:mm:ss.cc).
+     * cc = centésimos de segundo (centisegundos × 100 / 1000)
+     */
+    private fun formatAssTime(seconds: Double): String {
+        val totalCs = (seconds * 100).toInt()  // centisegundos totais
+        val h = totalCs / 360000
+        val m = (totalCs % 360000) / 6000
+        val s = (totalCs % 6000) / 100
+        val cs = totalCs % 100
+        return String.format("%d:%02d:%02d.%02d", h, m, s, cs)
+    }
+
+    /**
+     * Constrói o texto karaoke com tags {\k<centisegs>} para cada palavra.
+     */
+    private fun buildKaraokeText(words: List<KaraokeWord>): String {
+        val sb = StringBuilder()
+        for (word in words) {
+            val centisecs = (word.durationSec * 100).toInt()
+            sb.append("{\\k$centisecs}")
+            // Se tiver cor personalizada, adiciona \c
+            if (word.color != null) {
+                sb.append("{\\c&H${word.color}&}")
+            }
+            sb.append(word.text)
+            sb.append(" ")
+        }
+        return sb.toString().trimEnd()
     }
 
     // ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ──
@@ -146,69 +252,46 @@ class FFmpegMixer(
     /**
      * Monta o comando FFmpeg completo.
      *
-     * ─── ESTRUTURA DO COMANDO ───
-     *
-     * 1. Converte ganho linear (0..2) para dB:
-     *    dB = 20 * log10(volume)
-     *    Ex: 1.0 → 0dB (original), 0.5 → -6dB, 2.0 → +6dB
-     *
-     * 2. Aplica volume com filtro 'volume':
-     *    [1:a]volume=+3dB[music]  — aumenta música em 3dB
-     *    [2:a]volume=-6dB[voice]  — reduz voz em 6dB
-     *
-     * 3. Mixa com 'amix':
-     *    [music][voice]amix=inputs=2:duration=first[mixed]
-     *    - duration=first: duração = duração da primeira entrada
-     *      (a música base, que é a referência)
-     *    - dropout_transition=2: transição suave se uma entrada acabar
-     *
-     * 4. Mapeia e codifica:
-     *    - 0:v → vídeo original (cópia direta, sem re-encode)
-     *    - [mixed] → áudio mixado (codificado como AAC)
-     *
-     * ─── COMANDO COMPLETO ───
-     *
-     * ffmpeg -i video.mp4 -i instrumental.aac -i voice.aac \
-     *   -filter_complex \
-     *     "[1:a]volume=VOL_MUSIC_DB[music]; \
-     *      [2:a]volume=VOL_VOICE_DB[voice]; \
-     *      [music][voice]amix=inputs=2:duration=first:dropout_transition=2[mixed]" \
-     *   -map 0:v -map "[mixed]" \
-     *   -c:v copy \
-     *   -c:a aac -b:a 192k \
-     *   -shortest \
-     *   output_final.mp4
+     * Se assFile for fornecido, queima as legendas no vídeo.
      */
-    private fun buildCommand(outputFile: File): String {
+    private fun buildCommand(outputFile: File, assFile: File?): String {
         val voiceDb = linearToDb(voiceVolume)
         val musicDb = linearToDb(musicVolume)
 
-        return buildString {
-            append("-y ")                                          // sobrescreve sem perguntar
-            append("-i \"${videoFile.absolutePath}\" ")            // [0] vídeo da câmera
-            append("-i \"${instrumentalFile!!.absolutePath}\" ")   // [1] áudio instrumental
-            append("-i \"${voiceFile.absolutePath}\" ")            // [2] áudio da voz
-            append("-filter_complex \"")
-            append("[1:a]volume=${musicDb}dB[music];")             // ajusta volume música
-            append("[2:a]volume=${voiceDb}dB[voice];")             // ajusta volume voz
-            append("[music][voice]amix=inputs=2:duration=first:dropout_transition=2[mixed]")
-            append("\" ")
-            append("-map 0:v ")                                    // pega vídeo do input 0
-            append("-map \"[mixed]\" ")                             // pega áudio mixado
-            append("-c:v copy ")                                   // copia vídeo sem re-encode
-            append("-c:a aac -b:a 192k ")                          // codifica áudio como AAC 192kbps
-            append("-shortest ")                                   // corta na duração menor
-            append("\"${outputFile.absolutePath}\"")                // arquivo final
+        val sb = StringBuilder()
+
+        sb.append("-y ")                                          // sobrescreve sem perguntar
+        sb.append("-i \"${videoFile.absolutePath}\" ")            // [0] vídeo da câmera
+        sb.append("-i \"${instrumentalFile!!.absolutePath}\" ")   // [1] áudio instrumental
+        sb.append("-i \"${voiceFile.absolutePath}\" ")            // [2] áudio da voz
+
+        // Filtro complexo: áudio
+        sb.append("-filter_complex \"")
+        sb.append("[1:a]volume=${musicDb}dB[music];")             // ajusta volume música
+        sb.append("[2:a]volume=${voiceDb}dB[voice];")             // ajusta volume voz
+        sb.append("[music][voice]amix=inputs=2:duration=first:dropout_transition=2[mixed]")
+        sb.append("\" ")
+
+        // Legendas (ASS karaoke) — se fornecido
+        if (assFile != null && assFile.exists()) {
+            sb.append("-vf \"ass='${assFile.absolutePath}'\" ")
         }
+
+        sb.append("-map 0:v ")                                    // pega vídeo do input 0
+        sb.append("-map \"[mixed]\" ")                             // pega áudio mixado
+        sb.append("-c:v libx264 -crf 18 ")                        // re-encode vídeo com legendas
+        sb.append("-preset ultrafast ")                            // encoding rápido
+        sb.append("-c:a aac -b:a 192k ")                          // codifica áudio como AAC 192kbps
+        sb.append("-shortest ")                                   // corta na duração menor
+        sb.append("\"${outputFile.absolutePath}\"")                // arquivo final
+
+        return sb.toString()
     }
 
     // ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ──
     // EXECUÇÃO
     // ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ─── ──
 
-    /**
-     * Executa o comando FFmpeg e notifica o resultado.
-     */
     private fun executeFFmpeg(command: String, outputFile: File) {
         onProgress?.invoke(30)
 
@@ -241,14 +324,9 @@ class FFmpegMixer(
 
     /**
      * Converte ganho linear (multiplicador) para dB.
-     *
-     *   linear 1.0 →  0.0 dB (volume original)
-     *   linear 0.5 → -6.0 dB (metade do volume)
-     *   linear 2.0 → +6.0 dB (dobro do volume)
-     *   linear 0.0 → -∞  dB (silêncio)
      */
     private fun linearToDb(linear: Float): Float {
-        if (linear <= 0f) return -40f  // -40dB ≈ silêncio
+        if (linear <= 0f) return -40f
         return 20f * kotlin.math.log10(linear)
     }
 
@@ -256,3 +334,31 @@ class FFmpegMixer(
         private const val TAG = "FFmpegMixer"
     }
 }
+
+/**
+ * Uma linha de letra de karaoke (geralmente uma frase).
+ * @property startSec tempo de início em segundos
+ * @property endSec tempo de fim em segundos
+ * @property text texto completo da linha
+ * @property words lista de palavras com timing individual
+ * @property isChorus se é refrão (usar fonte maior)
+ */
+data class KaraokeLine(
+    val startSec: Double,
+    val endSec: Double,
+    val text: String,
+    val words: List<KaraokeWord> = emptyList(),
+    val isChorus: Boolean = false
+)
+
+/**
+ * Uma palavra dentro de uma linha de karaoke.
+ * @property text a palavra
+ * @property durationSec duração em segundos
+ * @property color cor ASS opcional (AABBGGRR, sem &H)
+ */
+data class KaraokeWord(
+    val text: String,
+    val durationSec: Double,
+    val color: String? = null
+)
